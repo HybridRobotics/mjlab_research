@@ -635,7 +635,7 @@ class MotionCommand(CommandTerm):
         qpos[free_joint_q_adr[3:7]] = self.body_quat_w[batch, 0].cpu().numpy()
         qpos[joint_q_adr] = self.joint_pos[batch].cpu().numpy()
 
-        visualizer.add_ghost_mesh(
+        visualizer.add_ghost_entity(
           qpos,
           model=self._ghost_model,
           label=f"ghost_{batch}",
