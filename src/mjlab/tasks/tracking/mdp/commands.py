@@ -210,12 +210,17 @@ class MotionCommand(CommandTerm):
     )
     self.body_quat_relative_w[:, :, 0] = 1.0
 
-    self.bin_count = int(self.motion.time_step_total // (1 / env.step_dt)) + 1
+    self.bin_count = int(self.motion.time_step_total // (0.2 / env.step_dt)) + 1
     self.bin_failed_count = torch.zeros(
       self.bin_count, dtype=torch.float, device=self.device
     )
     self._current_bin_failed = torch.zeros(
       self.bin_count, dtype=torch.float, device=self.device
+    )
+    # The reset distribution of sampling_mode="external", uniform until
+    # set_sampling_distribution sets it.
+    self._external_probs = torch.full(
+      (self.bin_count,), 1.0 / self.bin_count, device=self.device
     )
     self.kernel = torch.tensor(
       [self.cfg.adaptive_lambda**i for i in range(self.cfg.adaptive_kernel_size)],
@@ -394,7 +399,23 @@ class MotionCommand(CommandTerm):
     ).view(-1)
 
     sampling_probabilities = sampling_probabilities / sampling_probabilities.sum()
+    self._sample_bins(env_ids, sampling_probabilities)
 
+  def set_sampling_distribution(self, probs: torch.Tensor) -> None:
+    """Set the per-bin reset distribution of ``sampling_mode="external"``.
+
+    ``probs`` has ``bin_count`` entries; it is clamped non-negative and
+    normalized. An input of the wrong length or without positive finite mass
+    leaves the distribution unchanged.
+    """
+    probs = probs.detach().to(self.device, dtype=torch.float).clamp_min(0.0)
+    total = probs.sum()
+    if probs.numel() != self.bin_count or not torch.isfinite(total) or total <= 0:
+      return
+    self._external_probs = probs / total
+
+  def _sample_bins(self, env_ids: torch.Tensor, sampling_probabilities: torch.Tensor):
+    """Draw reset frames from a normalized per-bin distribution."""
     sampled_bins = torch.multinomial(
       sampling_probabilities, len(env_ids), replacement=True
     )
@@ -452,6 +473,8 @@ class MotionCommand(CommandTerm):
         self.time_steps[env_ids] = starts[clips]
     elif self.cfg.sampling_mode == "uniform":
       self._uniform_sampling(env_ids)
+    elif self.cfg.sampling_mode == "external":
+      self._sample_bins(env_ids, self._external_probs)
     else:
       assert self.cfg.sampling_mode == "adaptive"
       self._adaptive_sampling(env_ids)
@@ -756,7 +779,7 @@ class MotionCommandCfg(CommandTermCfg):
   adaptive_lambda: float = 0.8
   adaptive_uniform_ratio: float = 0.1
   adaptive_alpha: float = 0.001
-  sampling_mode: Literal["adaptive", "uniform", "start"] = "adaptive"
+  sampling_mode: Literal["adaptive", "uniform", "start", "external"] = "adaptive"
 
   @dataclass
   class VizCfg:
